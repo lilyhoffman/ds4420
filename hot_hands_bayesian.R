@@ -253,6 +253,9 @@ ggsave("plot_posterior.png", plot = posterior_p, width = 8, height = 4, dpi = 15
 
 #  3. Prior vs MLE vs Posterior 
 
+posterior_df <- hot_hand_model |>
+  gather_draws(b_hit_rate_5_s, b_make_streak_s)
+
 # Zoom x-axis to where the posterior actually lives
 x_range <- range(posterior_df$.value) * 1.3
 
@@ -260,9 +263,17 @@ prior_df_zoom <- tibble(
   x = seq(x_range[1], x_range[2], length.out = 500),
   y = dnorm(x, mean = 0, sd = 1)   # prior is still Normal(0,1), just plotted on zoomed range
 )
+# Zoom x-axis to where the posterior actually lives
+x_range <- range(posterior_df$.value) * 1.3
+
+prior_df_zoom <- tibble(
+  x = seq(x_range[1], x_range[2], length.out = 500),
+  y = dnorm(x, mean = 0, sd = 1)   # prior is still Normal(0,1), just plotted on zoomed range
+)
+
 prior_mle_p <- ggplot() +
   geom_line(
-    data = prior_df,
+    data = prior_df_zoom,
     aes(x = x, y = y, linetype = "Prior  Normal(0,1)"),
     color = "grey40", linewidth = 0.8
   ) +
@@ -293,9 +304,10 @@ prior_mle_p <- ggplot() +
     "MLE 95% CI" = "#E63946"
   )) +
   scale_linetype_manual(name = NULL, values = c("Prior  Normal(0,1)" = "solid")) +
+  coord_cartesian(xlim = x_range) +   # zoom without dropping data
   labs(
     title    = "Prior vs. MLE — hot hand coefficients",
-    subtitle = "Posterior shown for reference; prior is Normal(0, 1)",
+    subtitle = "Prior is Normal(0,1) — shown at posterior scale; it is essentially flat here",
     x        = "Coefficient (logit scale)",
     y        = "Density"
   ) +
