@@ -252,7 +252,6 @@ elif page == "Interactive Visualization":
         f"""
         **Matchup:** {game_info.get('matchup', 'N/A')}  
         **Game ID:** {game}  
-        **Date:** {game_info.get('game_date', 'N/A')}  
         **Player:** {player}  
         **Total Shots:** {len(filtered)}
         """
