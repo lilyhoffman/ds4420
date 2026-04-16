@@ -26,4 +26,5 @@ Across both models, recent performance has only a small effect on future shots. 
 Overall, the results suggest that shot outcomes are mostly independent, and the hot hand effect is much smaller than people expect.
 
 ## Streamlit App
+
 https://ds4420-hot-hands.streamlit.app/
