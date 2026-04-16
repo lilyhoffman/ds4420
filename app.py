@@ -1,197 +1,204 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import statsmodels.api as sm
+import plotly.graph_objects as go
 
-# page setup
-st.set_page_config(
-    page_title="Hot Hand Analysis",
-    page_icon="📊",
-    layout="wide"
-)
+st.set_page_config(page_title="Hot Hand Analysis", page_icon="🏀", layout="wide")
 
-# sidebar nav
-page = st.sidebar.radio(
-    "Navigate",
-    ["Landing Page", "Visualization"]
-)
+page = st.sidebar.radio("Navigate", ["Landing Page", "Interactive Visualization"])
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("pbp/pbp2006.csv")
-
-    # keep only shots
+    df = pd.read_csv("pbp/pbp2006.csv").copy()
     df = df[df["type"].isin(["Made Shot", "Missed Shot"])].copy()
 
-    # keep needed columns
-    df = df[[
+    for col in ["player", "type", "result", "clock", "desc", "team"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+
+    keep_cols = [
         "gameid", "playerid", "player", "team",
         "period", "clock", "result", "type",
-        "season", "desc"
-    ]].copy()
+        "season", "desc", "dist", "subtype"
+    ]
+    keep_cols = [c for c in keep_cols if c in df.columns]
+    df = df[keep_cols].copy()
 
-    # binary outcome
     df["made"] = (df["result"] == "Made").astype(int)
 
-    # points
-    df["points"] = 0
-    df.loc[df["result"] == "Made", "points"] = 2
-    df.loc[
-        (df["result"] == "Made") &
-        (
-            df["desc"].str.contains("3PT", case=False, na=False) |
-            df["desc"].str.contains("3-PT", case=False, na=False)
-        ),
-        "points"
-    ] = 3
+    if "clock" in df.columns:
+        clock_parts = df["clock"].str.extract(r"PT(\d+)M([\d\.]+)S")
+        df["clock_sec"] = (
+            pd.to_numeric(clock_parts[0], errors="coerce") * 60
+            + pd.to_numeric(clock_parts[1], errors="coerce")
+        )
+    else:
+        df["clock_sec"] = np.nan
 
-    # convert clock to seconds
-    clock_parts = df["clock"].str.extract(r"PT(\d+)M([\d\.]+)S")
-    df["clock_sec"] = clock_parts[0].astype(float) * 60 + clock_parts[1].astype(float)
+    sort_cols = [c for c in ["gameid", "player", "period", "clock_sec"] if c in df.columns]
+    if sort_cols:
+        ascending = [True, True, True, False][:len(sort_cols)]
+        df = df.sort_values(sort_cols, ascending=ascending).reset_index(drop=True)
 
-    # sort in shot order
-    df = df.sort_values(
-        ["gameid", "player", "period", "clock_sec"],
-        ascending=[True, True, True, False]
-    ).reset_index(drop=True)
-
-    # shot number within each player-game
     df["shot_num"] = df.groupby(["gameid", "player"]).cumcount() + 1
-
-    # cumulative fg%
-    df["fg_pct"] = (
-        df.groupby(["gameid", "player"])["made"]
-        .expanding()
-        .mean()
-        .reset_index(level=[0, 1], drop=True)
-    )
-
-    # lag for AR(1)
-    df["fg_pct_lag1"] = df.groupby(["gameid", "player"])["fg_pct"].shift(1)
-
-    # game metadata
     df["game_date"] = df["gameid"].astype(str).str[:8]
 
-    game_teams = df.groupby("gameid")["team"].unique().reset_index()
-    game_teams["matchup"] = game_teams["team"].apply(
-        lambda x: " vs ".join(sorted([str(team) for team in x if pd.notna(team)]))
-    )
-    df = df.merge(game_teams[["gameid", "matchup"]], on="gameid", how="left")
+    if "team" in df.columns:
+        game_teams = df.groupby("gameid")["team"].unique().reset_index()
+        game_teams["matchup"] = game_teams["team"].apply(
+            lambda x: " vs ".join(sorted([str(team) for team in x if pd.notna(team)]))
+        )
+        df = df.merge(game_teams[["gameid", "matchup"]], on="gameid", how="left")
+    else:
+        df["matchup"] = ""
 
-    # precompute which player-games can fit logistic AR
-    # need enough rows after 3 lags, and both classes present
     eligibility = (
         df.groupby(["gameid", "player", "playerid"], as_index=False)
         .agg(
             n_shots=("made", "size"),
             made_sum=("made", "sum"),
             matchup=("matchup", "first"),
-            game_date=("game_date", "first"),
-            points=("points", "sum")
+            game_date=("game_date", "first")
         )
     )
 
-    eligibility["can_fit_logistic_ar"] = (
-        (eligibility["n_shots"] >= 8) &
-        (eligibility["made_sum"] > 0) &
-        (eligibility["made_sum"] < eligibility["n_shots"])
+    eligibility["can_fit"] = (
+        (eligibility["n_shots"] >= 8)
+        & (eligibility["made_sum"] > 0)
+        & (eligibility["made_sum"] < eligibility["n_shots"])
     )
 
-    valid_pairs = eligibility[eligibility["can_fit_logistic_ar"]].copy()
+    valid_pairs = eligibility[eligibility["can_fit"]].copy()
     valid_games = sorted(valid_pairs["gameid"].unique())
 
     return df, valid_pairs, valid_games
 
 
-def fit_logistic_ar(one_game):
+def build_make_streak(values):
+    streak = []
+    count = 0
+    for x in values:
+        streak.append(count)
+        count = count + 1 if x == 1 else 0
+    return streak
+
+
+def build_model_df(one_game):
     model_df = one_game.copy()
+    model_df["lag_1"] = model_df["made"].shift(1)
+    model_df["lag_2"] = model_df["made"].shift(2)
+    model_df["lag_3"] = model_df["made"].shift(3)
+    model_df["hit_rate_5"] = model_df["made"].shift(1).rolling(5, min_periods=5).mean()
+    model_df["make_streak"] = build_make_streak(model_df["made"].tolist())
+    model_df = model_df.dropna(subset=["lag_1", "lag_2", "lag_3", "hit_rate_5"]).copy()
+    return model_df
 
-    model_df["lag1"] = model_df["made"].shift(1)
-    model_df["lag2"] = model_df["made"].shift(2)
-    model_df["lag3"] = model_df["made"].shift(3)
 
-    model_df = model_df.dropna(subset=["lag1", "lag2", "lag3"]).copy()
+def sigmoid(z):
+    z = np.clip(z, -500, 500)
+    return 1 / (1 + np.exp(-z))
 
-    X = model_df[["lag1", "lag2", "lag3"]]
-    X = sm.add_constant(X)
-    y = model_df["made"]
 
-    model = sm.Logit(y, X).fit(disp=0)
-    model_df["pred_prob"] = model.predict(X)
+def train_logistic_regression(X, y, lr=0.05, epochs=2500):
+    n, d = X.shape
+    w = np.zeros((d, 1))
+    for _ in range(epochs):
+        p_hat = sigmoid(X @ w)
+        gradient = (X.T @ (p_hat - y)) / n
+        w -= lr * gradient
+    return w
+
+
+def run_model(one_game):
+    model_df = build_model_df(one_game)
+    if len(model_df) < 8:
+        return None
+
+    feature_cols = ["lag_1", "lag_2", "lag_3", "hit_rate_5", "make_streak"]
+
+    for col in ["hit_rate_5", "make_streak"]:
+        mean = model_df[col].mean()
+        std = model_df[col].std()
+        if pd.isna(std) or std == 0:
+            std = 1.0
+        model_df[col] = (model_df[col] - mean) / std
+
+    X = model_df[feature_cols].values.astype(float)
+    y = model_df["made"].values.reshape(-1, 1).astype(float)
+
+    X = np.hstack([np.ones((X.shape[0], 1)), X])
+    w = train_logistic_regression(X, y)
+
+    pred_prob = sigmoid(X @ w).flatten()
+    model_df["pred_prob"] = pred_prob
 
     return model_df
 
 
-def fit_ar1_prediction(one_game):
-    one_game = one_game.dropna(subset=["fg_pct_lag1", "fg_pct"]).copy()
-
-    train_size = int(0.8 * len(one_game))
-    train_data = one_game.iloc[:train_size].copy()
-    test_data = one_game.iloc[train_size:].copy()
-
-    X_train = np.array(train_data["fg_pct_lag1"]).reshape(-1, 1)
-    y_train = np.array(train_data["fg_pct"]).reshape(-1, 1)
-
-    w = np.dot(
-        np.linalg.inv(np.dot(X_train.T, X_train)),
-        np.dot(X_train.T, y_train)
-    )
-
-    y_pred = []
-    start = np.array(train_data["fg_pct_lag1"].iloc[-1]).reshape(-1, 1)
-
-    for _ in range(len(test_data)):
-        next_pred = w.T.dot(start).flatten()[0]
-        y_pred.append(next_pred)
-        start = np.array(next_pred).reshape(-1, 1)
-
-    pred_df = pd.DataFrame({
-        "shot_num": test_data["shot_num"].values,
-        "fg_pct_actual": test_data["fg_pct"].values,
-        "fg_pct_pred": y_pred
-    })
-
-    return pred_df
-
-
 df, valid_pairs, valid_games = load_data()
 
-# landing page
 if page == "Landing Page":
-    st.title("Hot Hand or Randomness?")
+    st.title("Hot Hand or Illusion? A Data-Driven NBA Analysis")
 
-    st.write("""
-
-This app is a small, interactive sample of our full project analyzing the “hot hand” in basketball. The complete study uses NBA play-by-play data and applies time series and Bayesian methods to test whether shooting outcomes are dependent over time or largely random.
-
-Here, we showcase two core components of our methodology:
-- **Logistic Autoregressive Model:** estimates the probability of making a shot based on recent shot history.
-- **AR(1) Model:** predicts shooting performance trends using prior values.
-
-Users can explore selected games and players to visualize how these models behave on real shot sequences and gain intuition for our broader analysis.
- """)
-
-# visualization page
-elif page == "Visualization":
-    st.title("Time Series Visualizations")
-
-    st.write("""
-    Only games with at least one player eligible for the logistic AR model are shown.
-    After selecting a game, choose from the eligible players in that game.
-    """)
-
-    # only valid games appear
-    game = st.selectbox("Select Game", valid_games)
-
-    # only valid players in selected game appear
-    valid_players_in_game = (
-        valid_pairs[valid_pairs["gameid"] == game]
-        .sort_values(["points", "n_shots"], ascending=[False, False])
+    st.write(
+        """
+        This app presents a small interactive component of our project exploring the
+        “hot hand” in basketball. The hot hand refers to the idea that a player is more
+        likely to make a shot after a streak of successful attempts. While this belief
+        is common among players, coaches, and fans, it is still debated whether it reflects
+        a real pattern in performance or simply random variation.
+        """
     )
 
-    player_options = valid_players_in_game["player"].tolist()
-    player = st.selectbox("Select Player", player_options)
+    st.write(
+        """
+        In our full project, we analyze NBA play-by-play data to study shot outcomes
+        over time. We treat each shot as a binary event, either made or missed, and
+        examine whether recent performance has a meaningful effect on future shots.
+        To do this, we apply a handwritten logistic autoregressive model as well as
+        a Bayesian logistic regression model.
+        """
+    )
+
+    st.write(
+        """
+        The logistic autoregressive model uses recent shot history to estimate the
+        probability of making the next shot. This allows us to capture short-term
+        dependence and see whether streaks actually change predicted performance.
+        The Bayesian model complements this by providing a probabilistic view of
+        uncertainty in these effects.
+        """
+    )
+
+    st.write(
+        """
+        This app focuses on one part of that analysis. You can select a specific
+        game and player to visualize how predicted shot probabilities evolve over
+        the course of a game. The goal is to build intuition for how the model
+        responds to sequences of made and missed shots, and whether strong streak
+        patterns appear in the predictions.
+        """
+    )
+
+    st.write(
+        """
+        Overall, this interactive view reflects our broader finding that while there
+        may be small changes in probability after recent success, these effects are
+        generally weak and not strong enough to suggest a consistent hot hand.
+        """
+    )
+
+elif page == "Interactive Visualization":
+    st.title("Shot Sequence")
+
+    game = st.selectbox("Select Game", valid_games)
+
+    valid_players = (
+        valid_pairs[valid_pairs["gameid"] == game]
+        .sort_values(["n_shots"], ascending=False)
+    )
+
+    player = st.selectbox("Select Player", valid_players["player"].tolist())
 
     filtered = (
         df[(df["gameid"] == game) & (df["player"] == player)]
@@ -199,50 +206,70 @@ elif page == "Visualization":
         .copy()
     )
 
+    result_df = run_model(filtered)
+
+    if result_df is None:
+        st.warning("Not enough shots for this selection.")
+    else:
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=result_df["shot_num"],
+            y=result_df["pred_prob"],
+            mode="lines+markers",
+            name="Predicted P(make)"
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=result_df["shot_num"],
+            y=result_df["made"],
+            mode="markers",
+            name="Actual"
+        ))
+
+        fig.update_layout(
+            title="Predicted Probability vs Actual",
+            xaxis_title="Shot Number",
+            yaxis_title="Probability",
+            yaxis=dict(range=[0, 1])
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Game Info & Sample Data")
+
+    st.write(
+        """
+        Explore a sample of the shot data for the selected player and game,
+        along with key game details and context.
+        """
+    )
+
+    # game info
     game_info = filtered.iloc[0]
-    player_info = valid_players_in_game[valid_players_in_game["player"] == player].iloc[0]
 
-    st.subheader(f"{player}")
-    st.caption(f"Matchup: {game_info['matchup']}")
-    st.caption(f"Game ID: {game}")
-    st.caption(f"Date: {game_info['game_date']}")
-    st.caption(f"Points in game: {int(player_info['points'])}")
-    st.caption(f"Shot attempts: {int(player_info['n_shots'])}")
+    st.markdown(
+        f"""
+        **Matchup:** {game_info.get('matchup', 'N/A')}  
+        **Game ID:** {game}  
+        **Date:** {game_info.get('game_date', 'N/A')}  
+        **Player:** {player}  
+        **Total Shots:** {len(filtered)}
+        """
+    )
 
-    # logistic AR plot
-    st.subheader("Logistic AR Model")
-    st.caption("Predicted make probability based on the previous three shot outcomes.")
+    # number of rows to display
+    n_rows = st.slider("Number of rows to display", 5, 50, 15)
 
-    logistic_df = fit_logistic_ar(filtered)
+    # choose useful columns if they exist
+    possible_cols = [
+        "shot_num", "period", "clock", "result", "made",
+        "team", "player", "dist", "subtype"
+    ]
+    show_cols = [c for c in possible_cols if c in filtered.columns]
 
-    fig1, ax1 = plt.subplots(figsize=(10, 4))
-    ax1.plot(logistic_df["shot_num"].values, logistic_df["pred_prob"].values, label="Predicted Probability")
-    ax1.scatter(logistic_df["shot_num"].values, logistic_df["made"].values, alpha=0.4, label="Actual Outcome")
-    ax1.set_xlabel("Shot Number")
-    ax1.set_ylabel("Probability / Outcome")
-    ax1.set_title("Logistic AR Prediction")
-    ax1.set_ylim(0, 1)
-    ax1.legend()
-    st.pyplot(fig1)
-
-    # AR(1) plot
-    st.subheader("AR(1) Prediction")
-    st.caption("Predicted cumulative FG% on the test portion of the shot sequence.")
-
-    ar1_df = fit_ar1_prediction(filtered)
-
-    fig2, ax2 = plt.subplots(figsize=(10, 4))
-    ax2.plot(ar1_df["shot_num"].values, ar1_df["fg_pct_actual"].values, label="Actual FG%")
-    ax2.plot(ar1_df["shot_num"].values, ar1_df["fg_pct_pred"].values, linestyle="--", label="Predicted FG%")
-    ax2.set_xlabel("Shot Number")
-    ax2.set_ylabel("FG%")
-    ax2.set_title("AR(1) Model Prediction")
-    ax2.set_ylim(0, 1)
-    ax2.legend()
-    st.pyplot(fig2)
-
-    # table
     st.dataframe(
-        filtered[["shot_num", "period", "clock", "result", "points", "fg_pct"]]
+        filtered[show_cols]
+        .head(n_rows)
         .reset_index(drop=True)
     )
