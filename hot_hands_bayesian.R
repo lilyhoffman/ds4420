@@ -204,3 +204,97 @@ posterior_epred(hot_hand_model,
     shot_subtype  = "Jump Shot"
   )
 ) |> apply(2, mean)
+
+
+
+library(broom)
+
+
+# ── 1. Fit frequentist GLM to get MLE ──────────────────────────────────────
+mle_fit <- glm(
+  shot_made ~ hit_rate_5_s + make_streak_s + dist_s + clock_s + shot_subtype,
+  data   = model_df,
+  family = binomial(link = "logit")
+)
+
+mle_coefs <- tidy(mle_fit, conf.int = TRUE) |>
+  filter(term %in% c("hit_rate_5_s", "make_streak_s")) |>
+  mutate(term = recode(term,
+    hit_rate_5_s  = "b_hit_rate_5_s",
+    make_streak_s = "b_make_streak_s"
+  ))
+
+# ── Shared white theme override ─────────────────────────────────────────────
+white_theme <- theme(
+  plot.background  = element_rect(fill = "white", color = NA),
+  panel.background = element_rect(fill = "white", color = NA),
+  legend.background = element_rect(fill = "white", color = NA)
+)
+
+# ── 1. Trace plots ───────────────────────────────────────────────────────────
+trace_p <- mcmc_trace(hot_hand_model, pars = c("b_hit_rate_5_s", "b_make_streak_s")) +
+  white_theme +
+  labs(title = "Trace plots — hot hand coefficients")
+
+ggsave("plot_trace.png", plot = trace_p, width = 10, height = 4, dpi = 150, bg = "white")
+
+# ── 2. Posterior density ─────────────────────────────────────────────────────
+posterior_p <- hot_hand_model |>
+  gather_draws(b_hit_rate_5_s, b_make_streak_s) |>
+  ggplot(aes(x = .value, fill = .variable)) +
+  geom_density(alpha = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(title = "Posterior distributions — hot hand coefficients",
+       x = "Coefficient (logit scale)", y = "Density") +
+  theme_minimal() +
+  white_theme
+
+ggsave("plot_posterior.png", plot = posterior_p, width = 8, height = 4, dpi = 150, bg = "white")
+
+# ── 3. Prior vs MLE vs Posterior ─────────────────────────────────────────────
+prior_mle_p <- ggplot() +
+  geom_line(
+    data = prior_df,
+    aes(x = x, y = y, linetype = "Prior  Normal(0,1)"),
+    color = "grey40", linewidth = 0.8
+  ) +
+  geom_density(
+    data = posterior_df,
+    aes(x = .value, fill = "Posterior"),
+    alpha = 0.35, color = NA
+  ) +
+  geom_vline(
+    data = mle_coefs,
+    aes(xintercept = estimate, color = "MLE"),
+    linewidth = 0.9
+  ) +
+  geom_rect(
+    data = mle_coefs,
+    aes(xmin = conf.low, xmax = conf.high,
+        ymin = -Inf, ymax = Inf, fill = "MLE 95% CI"),
+    alpha = 0.15, inherit.aes = FALSE
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.5) +
+  facet_wrap(~ .variable, labeller = as_labeller(c(
+    b_hit_rate_5_s  = "Rolling hit rate (5-shot window)",
+    b_make_streak_s = "Make streak"
+  ))) +
+  scale_color_manual(name = NULL, values = c("MLE" = "#E63946")) +
+  scale_fill_manual(name = NULL, values = c(
+    "Posterior"  = "#457B9D",
+    "MLE 95% CI" = "#E63946"
+  )) +
+  scale_linetype_manual(name = NULL, values = c("Prior  Normal(0,1)" = "solid")) +
+  labs(
+    title    = "Prior vs. MLE — hot hand coefficients",
+    subtitle = "Posterior shown for reference; prior is Normal(0, 1)",
+    x        = "Coefficient (logit scale)",
+    y        = "Density"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom") +
+  white_theme
+
+ggsave("plot_prior_mle.png", plot = prior_mle_p, width = 10, height = 5, dpi = 150, bg = "white")
+
+message("All plots saved to: ", getwd())
