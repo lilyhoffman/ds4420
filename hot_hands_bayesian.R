@@ -210,7 +210,7 @@ posterior_epred(hot_hand_model,
 library(broom)
 
 
-# ── 1. Fit frequentist GLM to get MLE ──────────────────────────────────────
+#  1. Fit frequentist GLM to get MLE 
 mle_fit <- glm(
   shot_made ~ hit_rate_5_s + make_streak_s + dist_s + clock_s + shot_subtype,
   data   = model_df,
@@ -224,21 +224,21 @@ mle_coefs <- tidy(mle_fit, conf.int = TRUE) |>
     make_streak_s = "b_make_streak_s"
   ))
 
-# ── Shared white theme override ─────────────────────────────────────────────
+#  Shared white theme override 
 white_theme <- theme(
   plot.background  = element_rect(fill = "white", color = NA),
   panel.background = element_rect(fill = "white", color = NA),
   legend.background = element_rect(fill = "white", color = NA)
 )
 
-# ── 1. Trace plots ───────────────────────────────────────────────────────────
+#  1. Trace plots 
 trace_p <- mcmc_trace(hot_hand_model, pars = c("b_hit_rate_5_s", "b_make_streak_s")) +
   white_theme +
   labs(title = "Trace plots — hot hand coefficients")
 
 ggsave("plot_trace.png", plot = trace_p, width = 10, height = 4, dpi = 150, bg = "white")
 
-# ── 2. Posterior density ─────────────────────────────────────────────────────
+#  2. Posterior density 
 posterior_p <- hot_hand_model |>
   gather_draws(b_hit_rate_5_s, b_make_streak_s) |>
   ggplot(aes(x = .value, fill = .variable)) +
@@ -251,7 +251,15 @@ posterior_p <- hot_hand_model |>
 
 ggsave("plot_posterior.png", plot = posterior_p, width = 8, height = 4, dpi = 150, bg = "white")
 
-# ── 3. Prior vs MLE vs Posterior ─────────────────────────────────────────────
+#  3. Prior vs MLE vs Posterior 
+
+# Zoom x-axis to where the posterior actually lives
+x_range <- range(posterior_df$.value) * 1.3
+
+prior_df_zoom <- tibble(
+  x = seq(x_range[1], x_range[2], length.out = 500),
+  y = dnorm(x, mean = 0, sd = 1)   # prior is still Normal(0,1), just plotted on zoomed range
+)
 prior_mle_p <- ggplot() +
   geom_line(
     data = prior_df,
