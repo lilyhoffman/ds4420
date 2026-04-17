@@ -27,4 +27,6 @@ Overall, the results suggest that shot outcomes are mostly independent, and the 
 
 ## Streamlit App
 
+The Streamlit app may take a few seconds to fully load, but otherwise it should work without any additional steps.
+
 https://ds4420-hot-hands.streamlit.app/
